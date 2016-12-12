@@ -146,7 +146,6 @@ class ModelConverter(object):
                 return self.converters[converter](model, field, **kwargs)
         else:
             for converter in self.defaults:
-                print('IN DEFAULTS?', field.name, converter, field)
                 if not isinstance(field, converter):
                     # Early-continue because it simplifies reading the following code.
                     continue
