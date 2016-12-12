@@ -385,3 +385,96 @@ class ModelHiddenField(HiddenQueryField):
     """
     def __init__(self, label=None, validators=None, model=None, **kwargs):
         super(ModelHiddenField, self).__init__(label, validators, query=model.select(), **kwargs)
+        
+
+class StyleableTableWidget(widgets.TableWidget):
+    """ Provide field type and short_name in the TR class list, to allow for easier
+        styling.
+        
+        We can eliminate this in favour of wtforms' TableWidget if wtforms accepts
+        PR https://github.com/wtforms/wtforms/pull/310
+    """
+    def __call__(self, field, **kwargs):
+        html = []
+        if self.with_table_tag:
+            kwargs.setdefault('id', field.id)
+            html.append('<table %s>' % widgets.html_params(**kwargs))
+        hidden = ''
+        for subfield in field:
+            if subfield.type in ('HiddenField', 'CSRFTokenField'):
+                hidden += text_type(subfield)
+            else:
+                html.append('<tr class="%s %s %s"><th>%s<div class=errors>%s</div></th><td>%s%s</td></tr>' %
+                            (text_type(subfield.type), text_type(subfield.short_name),
+                             'error' if subfield.errors else '',
+                             text_type(subfield.label), '<br>'.join(subfield.errors),
+                             hidden, text_type(subfield)))
+                hidden = ''
+        if self.with_table_tag:
+            html.append('</table>')
+        if hidden:
+            html.append(hidden)
+        return widgets.HTMLString(''.join(html))
+        
+        
+class FormField(fields.FormField):
+    """ As per StyleableTableWidget """
+    widget = StyleableTableWidget()
+
+
+class ModelListField(fields.FieldList):
+    """
+    Similar to FieldList, but:
+        * Leave a <script type=template> immediately after the rendered field, to use when
+          creating dynamic forms with JavaScript
+        * Provide a "delete" button
+        * Add some more useful CSS selectors for styling and layout
+        * Does not try to populate the parent object in any way
+    """
+    def __init__(self, foreign_key_field, *args, **kwargs):
+        self.foreign_key_field = foreign_key_field
+        self.depth = kwargs.pop('depth', 0)
+        fields.FieldList.__init__(self, *args, **kwargs)
+        
+    def __call__(self, **kwargs):
+        kwargs.setdefault('id', self.id)
+        kwargs.setdefault('class', ' '.join([self.short_name,
+                                             'depth-{}'.format(self.depth)]))
+        html = ['<ul {}>'.format(widgets.html_params(**kwargs))]
+        item_template = "<li><label>{}</label> {}</li>"
+        for subfield in self:
+            html.append(item_template.format(str(subfield.object_data), subfield()))
+        html.append('</ul>')
+        html.append('<button '
+                      'name=add value="{}" '
+                      'type=button '
+                      'onclick="addInline.call(this)">+</button>'
+                      .format(self.name))
+        # Create a temporary bound field for the hidden template, so we can render it.
+        # Use \0 as a placeholder so we can escape any instances of {} in the rendered
+        # html with {{}}, before using {} as a placeholder for the field index.
+        # This is hackier than I'd like, but I'm struggling to find a more elegant
+        # solution.
+        placeholder = '\0{}\0'.format(self.short_name)      # Unique placeholder.
+        name = '{}-{}'.format(self.short_name, placeholder)
+        id = '{}-{}'.format(self.id, placeholder)
+        field = self.unbound_field.bind(form=None, name=name, prefix=self._prefix, id=id,
+                                        _meta=self.meta, translations=self._translations)
+        field.process(formdata=None)
+        field_html = str(field).replace('{}', '{{}}').replace(placeholder, '{}').replace('/script', '\\/script')
+        heading = "New {}".format(self.foreign_key_field.model_class.__name__)
+        html.append('<script type=template for="{}">{}</script>'
+                    .format(self.id, item_template.format(heading, field_html)))
+        return widgets.HTMLString(''.join(html))
+
+    def populate_obj(self, obj, name):
+        # Do nothing: don't try to populate objects, since the desired behaviour here
+        # is ill-defined.
+        pass
+
+
+class HiddenIntegerField(fields.IntegerField):
+    widget = widgets.HiddenInput()
+    def __init__(self, *args, **kwargs):
+        fields.IntegerField.__init__(self, *args, **kwargs)
+        self.type = 'HiddenField'    # So that TableWidget hides it properly.
